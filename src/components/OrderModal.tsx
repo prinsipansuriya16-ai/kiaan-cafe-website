@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Plus, Minus, Check, ExternalLink } from "lucide-react";
-import type { MenuItem } from "@/data/menu";
-import { MENU, MENU_SECTIONS } from "@/data/menu";
+import type { MenuItem, MenuSection } from "@/data/menu";
+import { fetchLiveMenu, fetchLiveSections } from "@/data/menu";
 import { CAFE, buildWhatsAppUrl } from "@/lib/cafe";
 import { supabase } from "@/integrations/supabase/client";
+import { loadStripe } from "@stripe/stripe-js";
+import { Elements } from "@stripe/react-stripe-js";
+import { createPaymentIntent } from "@/lib/stripe";
+import { CheckoutForm } from "@/components/CheckoutForm";
 
 type CartLine = { item: MenuItem; qty: number };
+
+// Loaded once at module scope, not per-render — this is the standard
+// Stripe.js pattern so the SDK isn't re-initialized on every open/close.
+const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
+
 
 export function OrderModal({
   open,
@@ -22,19 +31,78 @@ export function OrderModal({
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [cart, setCart] = useState<Record<string, CartLine>>({});
-  const [activeSection, setActiveSection] = useState(MENU_SECTIONS[0]);
+  
+  const [dbItems, setDbItems] = useState<MenuItem[]>([]);
+  const [dbSections, setDbSections] = useState<MenuSection[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeSection, setActiveSection] = useState<string>("");
+
   const [payment, setPayment] = useState<"online" | "cod" | "takeaway">("cod");
   const [placing, setPlacing] = useState(false);
   const [orderId, setOrderId] = useState<string | null>(null);
+
+  // Stripe checkout state
+  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [showStripeForm, setShowStripeForm] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
+
+  useEffect(() => {
+    async function loadOrderMenu() {
+      try {
+        setLoading(true);
+
+        // Uses the same "menu" + "menu_sections" source of truth as the Menu page
+        const [items, sections] = await Promise.all([
+          fetchLiveMenu(),
+          fetchLiveSections(),
+        ]);
+
+        setDbItems(items);
+        setDbSections(sections);
+      } catch (err) {
+        console.error("Critical Error loading order modal menu:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    if (open) {
+      loadOrderMenu();
+    }
+  }, [open]);
+
+  // Resolve which section tab should be active: prefer the seeded item's
+  // real section (by section_id), otherwise default to the first section
+  // once sections have loaded.
+  useEffect(() => {
+    if (!open || dbSections.length === 0) return;
+
+    if (seedItem) {
+      const matchedSection = dbSections.find(
+        (s) => s.id === seedItem.section_id,
+      );
+      if (matchedSection) {
+        setActiveSection(matchedSection.name);
+        return;
+      }
+    }
+
+    if (!activeSection) {
+      setActiveSection(dbSections[0].name);
+    }
+  }, [open, seedItem, dbSections]);
 
   useEffect(() => {
     if (open) {
       document.body.style.overflow = "hidden";
       setStep(1);
       setOrderId(null);
+      setClientSecret(null);
+      setShowStripeForm(false);
+      setPaymentError(null);
       if (seedItem) {
         setCart({ [seedItem.id]: { item: seedItem, qty: 1 } });
-        setActiveSection(seedItem.section);
       } else {
         setCart({});
       }
@@ -46,9 +114,17 @@ export function OrderModal({
     };
   }, [open, seedItem]);
 
+  const displayItems = useMemo(() => {
+    if (dbItems.length === 0) return [];
+    if (!activeSection) return dbItems;
+
+    return dbItems.filter(
+      (m) => m.section.trim().toLowerCase() === activeSection.trim().toLowerCase(),
+    );
+  }, [activeSection, dbItems]);
+
   const subtotal = useMemo(
-    () =>
-      Object.values(cart).reduce((s, l) => s + l.item.price * l.qty, 0),
+    () => Object.values(cart).reduce((s, l) => s + l.item.price * l.qty, 0),
     [cart],
   );
   const deliveryFee = payment === "takeaway" ? 0 : CAFE.deliveryFee;
@@ -68,7 +144,7 @@ export function OrderModal({
 
   const placeOrder = async () => {
     setPlacing(true);
-    const localId = `local-${Date.now().toString(36)}`;
+    setPaymentError(null);
     const payload = {
       customer_name: name.trim(),
       customer_phone: phone.trim(),
@@ -78,25 +154,55 @@ export function OrderModal({
       delivery_fee: deliveryFee,
       total,
       payment_method: payment,
+      // Only an actually-completed Stripe payment counts as "paid" — cod and
+      // takeaway are settled in person, so they stay "unpaid" until then.
+      payment_status: payment === "online" ? "paid" : "unpaid",
       fulfillment_method: payment === "takeaway" ? "takeaway" : "delivery",
-      status: payment === "online" ? "pending_payment" : "confirmed",
+      // By the time placeOrder runs, the order IS confirmed: for cod/takeaway
+      // there's nothing left to wait on, and for online payment this only
+      // fires from CheckoutForm's onSuccess, i.e. after Stripe has already
+      // settled the payment.
+      status: "confirmed",
     };
     try {
-      // Insert without return=representation to avoid anon SELECT policy check.
-      const { error } = await supabase.from("orders").insert(payload);
+      const { data, error }: { data: any; error: any } = await supabase.from("orders" as any).insert(payload as any).select().single();
       if (error) throw error;
-      setOrderId(localId);
-    } catch (e: any) {
-      // Silent fallback: cache locally and continue to WhatsApp confirmation.
-      try {
-        const key = "kiaan_pending_orders";
-        const existing = JSON.parse(sessionStorage.getItem(key) ?? "[]");
-        existing.push({ id: localId, ...payload, created_at: new Date().toISOString() });
-        sessionStorage.setItem(key, JSON.stringify(existing));
-      } catch {}
-      setOrderId(localId);
-    } finally {
+      setOrderId(data.id);
       setStep(4);
+    } catch (e: any) {
+      // Do NOT silently pretend this succeeded — a customer thinking their
+      // order went through when it never reached the business is worse than
+      // an honest error. Log the real cause and let them see it/retry.
+      console.error("[OrderModal] Failed to save order to Supabase:", {
+        error: e,
+        payload,
+      });
+      setPaymentError(
+        "We couldn't save your order. Please try again, or message us directly on WhatsApp so we don't miss it.",
+      );
+    } finally {
+      setPlacing(false);
+    }
+  };
+
+  // Called when the customer picks "Online Payment" and hits "Proceed to Pay".
+  // Creates a Stripe PaymentIntent for the current order total, then reveals
+  // the embedded CheckoutForm. The actual Supabase order write only happens
+  // afterwards, in CheckoutForm's onSuccess → placeOrder().
+  const startStripeCheckout = async () => {
+    setPaymentError(null);
+    setPlacing(true);
+    try {
+      const result = await createPaymentIntent({ data: total });
+      if (!result?.clientSecret) {
+        throw new Error("No client secret returned from payment server.");
+      }
+      setClientSecret(result.clientSecret);
+      setShowStripeForm(true);
+    } catch (err: any) {
+      console.error("[OrderModal] Failed to create Stripe payment intent:", err);
+      setPaymentError(err.message || "Could not start payment. Please try again.");
+    } finally {
       setPlacing(false);
     }
   };
@@ -110,7 +216,7 @@ export function OrderModal({
     }\n*Items:*\n${itemLines}\n\n*Subtotal:* ₹${subtotal}\n*Delivery:* ₹${deliveryFee}\n*Total:* ₹${total}\n\nOrder ID: ${orderId ?? "-"}`;
   }, [name, phone, address, payment, lines, subtotal, deliveryFee, total, orderId]);
 
-  const canStep1 = name.trim().length >= 2 && /^\d{7,15}$/.test(phone.trim()) && address.trim().length > 4;
+  const canStep1 = name.trim().length >= 2 && /^\d{10,15}$/.test(phone.trim()) && (payment === "takeaway" || address.trim().length > 4);
   const canStep2 = lines.length > 0;
 
   return (
@@ -176,38 +282,50 @@ export function OrderModal({
 
                   <div>
                     <div className="font-serif text-lg mb-2">Choose your items</div>
+                    
                     <div className="flex gap-2 overflow-x-auto pb-2">
-                      {MENU_SECTIONS.map((s) => (
-                        <button
-                          key={s}
-                          onClick={() => setActiveSection(s)}
-                          className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
-                            activeSection === s
-                              ? "border-primary bg-primary text-primary-foreground"
-                              : "border-border text-foreground/70 hover:bg-muted"
-                          }`}
-                        >
-                          {s}
-                        </button>
-                      ))}
+                      {loading ? (
+                        <div className="text-xs text-muted-foreground py-1">Loading categories...</div>
+                      ) : (
+                        dbSections.map((s) => (
+                          <button
+                            key={s.name}
+                            onClick={() => setActiveSection(s.name)}
+                            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                              activeSection === s.name
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-border text-foreground/70 hover:bg-muted"
+                            }`}
+                          >
+                            {s.name}
+                          </button>
+                        ))
+                      )}
                     </div>
+
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                      {MENU.filter((m) => m.section === activeSection).map((m) => {
-                        const qty = cart[m.id]?.qty ?? 0;
-                        return (
-                          <div key={m.id} className="flex items-center justify-between gap-2 rounded-xl border border-border p-3">
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium">{m.name}</div>
-                              <div className="text-xs text-primary">₹{m.price}</div>
+                      {loading ? (
+                        <div className="text-xs text-muted-foreground py-4 text-center col-span-2">Loading items...</div>
+                      ) : displayItems.length === 0 ? (
+                        <div className="text-xs text-muted-foreground py-4 text-center col-span-2">No items in this category.</div>
+                      ) : (
+                        displayItems.map((m) => {
+                          const qty = cart[m.id]?.qty ?? 0;
+                          return (
+                            <div key={m.id} className="flex items-center justify-between gap-2 rounded-xl border border-border p-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-medium">{m.name}</div>
+                                <div className="text-xs text-primary">₹{m.price}</div>
+                              </div>
+                              {qty === 0 ? (
+                                <button onClick={() => bump(m, 1)} className="rounded-full border border-primary px-3 py-1 text-xs font-semibold text-primary hover:bg-primary hover:text-primary-foreground">Add</button>
+                              ) : (
+                                <QtyStepper value={qty} onDec={() => bump(m, -1)} onInc={() => bump(m, 1)} />
+                              )}
                             </div>
-                            {qty === 0 ? (
-                              <button onClick={() => bump(m, 1)} className="rounded-full border border-primary px-3 py-1 text-xs font-semibold text-primary hover:bg-primary hover:text-primary-foreground">Add</button>
-                            ) : (
-                              <QtyStepper value={qty} onDec={() => bump(m, -1)} onInc={() => bump(m, 1)} />
-                            )}
-                          </div>
-                        );
-                      })}
+                          );
+                        })
+                      )}
                     </div>
                   </div>
                 </div>
@@ -242,15 +360,37 @@ export function OrderModal({
                             payment === p ? "border-primary bg-primary/5 text-primary" : "border-border"
                           }`}
                         >
-                          <input type="radio" name="pm" className="sr-only" checked={payment === p} onChange={() => setPayment(p)} />
+                          <input
+                            type="radio"
+                            name="pm"
+                            className="sr-only"
+                            checked={payment === p}
+                            onChange={() => {
+                              setPayment(p);
+                              if (p !== "online") {
+                                setShowStripeForm(false);
+                                setClientSecret(null);
+                                setPaymentError(null);
+                              }
+                            }}
+                          />
                           {p === "cod" ? "Cash on Delivery" : p === "online" ? "Online Payment" : "Takeaway"}
                         </label>
                       ))}
                     </div>
-                    {payment === "online" && (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        Online payments (Razorpay) will be wired once your keys are added. For now this places a pending order.
-                      </p>
+
+                    {paymentError && (
+                      <div className="mt-3 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                        {paymentError}
+                      </div>
+                    )}
+
+                    {payment === "online" && showStripeForm && clientSecret && (
+                      <div className="mt-4">
+                        <Elements stripe={stripePromise} options={{ clientSecret }}>
+                          <CheckoutForm amount={total} onSuccess={placeOrder} />
+                        </Elements>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -273,9 +413,6 @@ export function OrderModal({
                   >
                     Confirm Order via WhatsApp <ExternalLink className="h-4 w-4" />
                   </a>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    Sending on WhatsApp is your secure transaction receipt.
-                  </p>
                 </div>
               )}
             </div>
@@ -283,7 +420,16 @@ export function OrderModal({
             {step < 4 && (
               <div className="flex items-center justify-between border-t border-border px-6 py-4">
                 <button
-                  onClick={() => (step === 1 ? onClose() : setStep(step - 1))}
+                  onClick={() => {
+                    if (step === 1) return onClose();
+                    if (step === 3 && showStripeForm) {
+                      setShowStripeForm(false);
+                      setClientSecret(null);
+                      setPaymentError(null);
+                      return;
+                    }
+                    setStep(step - 1);
+                  }}
                   className="text-sm text-muted-foreground hover:text-foreground"
                 >
                   {step === 1 ? "Cancel" : "Back"}
@@ -306,14 +452,26 @@ export function OrderModal({
                     Proceed
                   </button>
                 )}
-                {step === 3 && (
-                  <button
-                    disabled={placing}
-                    onClick={placeOrder}
-                    className="btn-burgundy rounded-full px-6 py-2 text-sm font-medium disabled:opacity-40"
-                  >
-                    {placing ? "Placing…" : "Confirm & Pay"}
-                  </button>
+                {step === 3 && payment === "online" ? (
+                  !showStripeForm && (
+                    <button
+                      disabled={placing}
+                      onClick={startStripeCheckout}
+                      className="btn-burgundy rounded-full px-6 py-2 text-sm font-medium disabled:opacity-40"
+                    >
+                      {placing ? "Preparing payment…" : "Proceed to Pay"}
+                    </button>
+                  )
+                ) : (
+                  step === 3 && (
+                    <button
+                      disabled={placing}
+                      onClick={placeOrder}
+                      className="btn-burgundy rounded-full px-6 py-2 text-sm font-medium disabled:opacity-40"
+                    >
+                      {placing ? "Placing…" : "Confirm & Pay"}
+                    </button>
+                  )
                 )}
               </div>
             )}
@@ -324,37 +482,14 @@ export function OrderModal({
   );
 }
 
-function Field({
-  label,
-  value,
-  onChange,
-  placeholder,
-  textarea,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  textarea?: boolean;
-}) {
+function Field({ label, value, onChange, placeholder, textarea }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; textarea?: boolean }) {
   return (
     <label className="block">
       <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
       {textarea ? (
-        <textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          rows={3}
-          className="mt-1.5 w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
-        />
+        <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={3} className="mt-1.5 w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary" />
       ) : (
-        <input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="mt-1.5 w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary"
-        />
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="mt-1.5 w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary" />
       )}
     </label>
   );

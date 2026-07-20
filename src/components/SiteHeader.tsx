@@ -34,7 +34,7 @@ export function SiteHeader() {
           {NAV.map((n) => (
             <Link
               key={n.to}
-              to={n.to}
+              to={n.to as any}
               activeProps={{ className: "text-primary" }}
               inactiveProps={{ className: "text-foreground/70 hover:text-foreground" }}
               activeOptions={{ exact: true }}
@@ -66,7 +66,7 @@ export function SiteHeader() {
             {NAV.map((n) => (
               <Link
                 key={n.to}
-                to={n.to}
+                to={n.to as any}
                 onClick={() => setOpen(false)}
                 className="rounded-md px-3 py-3 text-base font-medium"
               >

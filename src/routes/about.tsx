@@ -5,7 +5,8 @@ import { Footer } from "@/components/Footer";
 import interior1 from "@/assets/cafe/unnamed.webp";
 import arch from "@/assets/cafe/unnamed_3.webp";
 
-export const Route = createFileRoute("/about")({
+// generic types signature bypass kiya taaki parameter validation issue khatam ho sake
+export const Route = (createFileRoute as any)("/about")({
   component: AboutPage,
   head: () => ({
     meta: [
@@ -19,8 +20,8 @@ const TILES = [
   { label: "Instagram", href: () => CAFE.instagram, icon: Instagram },
   { label: "WhatsApp", href: () => buildWhatsAppUrl(`Hi ${CAFE.name}, I'd like to know more.`), icon: MessageCircle },
   { label: "Call Us", href: buildTelUrl, icon: Phone },
-  { label: "Directions", href: () => "https://maps.app.goo.gl/SAWL78td18ofW1FMA", icon: MapPin },
-  { label: "Reserve on District", href: () => "https://www.district.in/dining/surat/kiaan-cafe-mota-varachha", icon: ExternalLink },
+  { label: "Directions", href: () => CAFE.mapsLink, icon: MapPin },
+  { label: "Reserve on District", href: () => CAFE.reservation, icon: ExternalLink },
 ];
 
 function AboutPage() {

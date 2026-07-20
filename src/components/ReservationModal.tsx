@@ -3,6 +3,17 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Check, ExternalLink } from "lucide-react";
 import { CAFE, buildWhatsAppUrl } from "@/lib/cafe";
 import { supabase } from "@/integrations/supabase/client";
+import { loadStripe } from "@stripe/stripe-js";
+import { Elements } from "@stripe/react-stripe-js";
+import { createPaymentIntent } from "@/lib/stripe";
+import { CheckoutForm } from "@/components/CheckoutForm";
+
+// Loaded once at module scope, same pattern as OrderModal.tsx
+const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
+
+// Dynamic advance deposit: ₹100 per guest. Adjust here if you want a flat
+// amount instead (e.g. a fixed ₹200 regardless of party size).
+const DEPOSIT_PER_GUEST = 100;
 
 const TIME_SLOTS = ["12:00 PM", "1:30 PM", "3:00 PM", "7:00 PM", "8:30 PM", "10:00 PM"];
 
@@ -30,11 +41,19 @@ export function ReservationModal({ open, onClose }: { open: boolean; onClose: ()
   const [placing, setPlacing] = useState(false);
   const [reservationId, setReservationId] = useState<string | null>(null);
 
+  // Stripe checkout state
+  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [showStripeForm, setShowStripeForm] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
   useEffect(() => {
     if (open) {
       document.body.style.overflow = "hidden";
       setStep(1);
       setReservationId(null);
+      setClientSecret(null);
+      setShowStripeForm(false);
+      setPaymentError(null);
     } else {
       document.body.style.overflow = "";
     }
@@ -45,9 +64,11 @@ export function ReservationModal({ open, onClose }: { open: boolean; onClose: ()
 
   const dateOptions = useMemo(() => [0, 1, 2].map(todayPlus), []);
 
-  const submit = async () => {
+  const depositAmount = useMemo(() => guests * DEPOSIT_PER_GUEST, [guests]);
+
+  const submit = async (stripePaymentIntentId?: string) => {
     setPlacing(true);
-    const localId = `local-${Date.now().toString(36)}`;
+    setPaymentError(null);
     const payload = {
       customer_name: name.trim(),
       customer_phone: phone.trim(),
@@ -55,23 +76,54 @@ export function ReservationModal({ open, onClose }: { open: boolean; onClose: ()
       reservation_date: dateStr,
       reservation_time: time,
       guests,
-      payment_method: payment,
+      // "at-venue" bookings aren't paid yet (settled when they arrive);
+      // "online" bookings only reach here after Stripe has confirmed payment.
+      payment_status: payment === "online" ? "paid" : "pending",
+      stripe_payment_intent_id: stripePaymentIntentId ?? null,
       status: "confirmed",
     };
     try {
-      const { error } = await supabase.from("reservations").insert(payload);
+      const { data, error } = await supabase
+        .from("reservations" as any)
+        .insert(payload as any)
+        .select()
+        .single();
       if (error) throw error;
-      setReservationId(localId);
-    } catch {
-      try {
-        const key = "kiaan_pending_reservations";
-        const existing = JSON.parse(sessionStorage.getItem(key) ?? "[]");
-        existing.push({ id: localId, ...payload, created_at: new Date().toISOString() });
-        sessionStorage.setItem(key, JSON.stringify(existing));
-      } catch {}
-      setReservationId(localId);
-    } finally {
+      setReservationId((data as any).id);
       setStep(4);
+    } catch (e: any) {
+      // Same principle as OrderModal: never show a fake "reserved" screen
+      // when the row never actually reached the database.
+      console.error("[ReservationModal] Failed to save reservation to Supabase:", {
+        error: e,
+        payload,
+      });
+      setPaymentError(
+        "We couldn't save your reservation. Please try again, or message us directly on WhatsApp so we don't miss it.",
+      );
+    } finally {
+      setPlacing(false);
+    }
+  };
+
+  // Called when the customer picks "Online (advance)" and hits "Proceed to Pay".
+  // Creates a Stripe PaymentIntent for the deposit amount, then reveals the
+  // embedded CheckoutForm. The Supabase write only happens afterwards, in
+  // CheckoutForm's onSuccess → submit(paymentIntentId).
+  const startStripeCheckout = async () => {
+    setPaymentError(null);
+    setPlacing(true);
+    try {
+      const result = await createPaymentIntent({ data: depositAmount });
+      if (!result?.clientSecret) {
+        throw new Error("No client secret returned from payment server.");
+      }
+      setClientSecret(result.clientSecret);
+      setShowStripeForm(true);
+    } catch (err: any) {
+      console.error("[ReservationModal] Failed to create Stripe payment intent:", err);
+      setPaymentError(err.message || "Could not start payment. Please try again.");
+    } finally {
       setPlacing(false);
     }
   };
@@ -200,11 +252,38 @@ export function ReservationModal({ open, onClose }: { open: boolean; onClose: ()
                             payment === p ? "border-primary bg-primary/5 text-primary" : "border-border"
                           }`}
                         >
-                          <input type="radio" name="rpm" className="sr-only" checked={payment === p} onChange={() => setPayment(p)} />
-                          {p === "at-venue" ? "Pay at Venue" : "Online (advance)"}
+                          <input
+                            type="radio"
+                            name="rpm"
+                            className="sr-only"
+                            checked={payment === p}
+                            onChange={() => {
+                              setPayment(p);
+                              if (p !== "online") {
+                                setShowStripeForm(false);
+                                setClientSecret(null);
+                                setPaymentError(null);
+                              }
+                            }}
+                          />
+                          {p === "at-venue" ? "Pay at Venue" : `Online (advance ₹${depositAmount})`}
                         </label>
                       ))}
                     </div>
+
+                    {paymentError && (
+                      <div className="mt-3 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                        {paymentError}
+                      </div>
+                    )}
+
+                    {payment === "online" && showStripeForm && clientSecret && (
+                      <div className="mt-4">
+                        <Elements stripe={stripePromise} options={{ clientSecret }}>
+                          <CheckoutForm amount={depositAmount} onSuccess={(id) => submit(id)} />
+                        </Elements>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -220,7 +299,7 @@ export function ReservationModal({ open, onClose }: { open: boolean; onClose: ()
                   </p>
                   {payment === "online" && (
                     <div className="mx-auto mt-4 max-w-sm rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-xs text-primary">
-                      Payment gateway is currently in <b>test mode</b>. No amount has been charged — please share the booking on WhatsApp to finalize.
+                      ₹{depositAmount} advance received. We'll see you at the table — the rest is payable at the venue.
                     </div>
                   )}
                   <a
@@ -238,7 +317,16 @@ export function ReservationModal({ open, onClose }: { open: boolean; onClose: ()
             {step < 4 && (
               <div className="flex items-center justify-between border-t border-border px-6 py-4">
                 <button
-                  onClick={() => (step === 1 ? onClose() : setStep(step - 1))}
+                  onClick={() => {
+                    if (step === 1) return onClose();
+                    if (step === 3 && showStripeForm) {
+                      setShowStripeForm(false);
+                      setClientSecret(null);
+                      setPaymentError(null);
+                      return;
+                    }
+                    setStep(step - 1);
+                  }}
                   className="text-sm text-muted-foreground hover:text-foreground"
                 >
                   {step === 1 ? "Cancel" : "Back"}
@@ -249,10 +337,22 @@ export function ReservationModal({ open, onClose }: { open: boolean; onClose: ()
                 {step === 2 && (
                   <button onClick={() => setStep(3)} className="btn-burgundy rounded-full px-6 py-2 text-sm font-medium">Next</button>
                 )}
-                {step === 3 && (
-                  <button disabled={placing} onClick={submit} className="btn-burgundy rounded-full px-6 py-2 text-sm font-medium disabled:opacity-40">
-                    {placing ? "Booking…" : "Confirm Booking"}
-                  </button>
+                {step === 3 && payment === "online" ? (
+                  !showStripeForm && (
+                    <button
+                      disabled={placing}
+                      onClick={startStripeCheckout}
+                      className="btn-burgundy rounded-full px-6 py-2 text-sm font-medium disabled:opacity-40"
+                    >
+                      {placing ? "Preparing payment…" : `Proceed to Pay ₹${depositAmount}`}
+                    </button>
+                  )
+                ) : (
+                  step === 3 && (
+                    <button disabled={placing} onClick={() => submit()} className="btn-burgundy rounded-full px-6 py-2 text-sm font-medium disabled:opacity-40">
+                      {placing ? "Booking…" : "Confirm Booking"}
+                    </button>
+                  )
                 )}
               </div>
             )}

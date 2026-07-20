@@ -32,7 +32,7 @@ export function Footer() {
           <ul className="mt-4 space-y-2 text-sm text-neutral-400">
             <li><Link to="/" className="hover:text-white">Home</Link></li>
             <li><Link to="/menu" className="hover:text-white">Menu</Link></li>
-            <li><Link to="/about" className="hover:text-white">About</Link></li>
+            <li><Link to={"/about" as any} className="hover:text-white">About</Link></li>
             <li><Link to="/gallery" className="hover:text-white">Gallery</Link></li>
           </ul>
         </div>

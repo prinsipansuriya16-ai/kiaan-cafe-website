@@ -1,3 +1,6 @@
+import { useState, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import type { MenuItem } from "@/data/menu";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { MapPin, Clock, Utensils, Home as HomeIcon } from "lucide-react";
@@ -39,6 +42,34 @@ const HOURS = [
 
 function Index() {
   const { openOrder, openReservation } = useCafe();
+  
+  // 1. Dynamic States add kiye
+  const [chefsSpecials, setChefsSpecials] = useState<MenuItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // 2. Database se dynamic data fetch karne ka logic add kiya
+  useEffect(() => {
+    async function fetchSpecials() {
+      try {
+        const { data, error } = await supabase
+          .from("menu" as any)
+          .select("*")
+          .order("name") as any;
+
+        if (error) throw error;
+
+        // Agar database item me koi badge hai (jaise "Chef's Special") toh use filter karein,
+        // nahi toh backup ke liye pehle 3 items screen par show kar dein.
+        const specials = data?.filter((item: any) => item.badge) || [];
+        setChefsSpecials(specials.length > 0 ? specials : (data?.slice(0, 3) || []));
+      } catch (err) {
+        console.error("Error loading chef specials:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchSpecials();
+  }, []);
 
   return (
     <div>
@@ -88,6 +119,7 @@ function Index() {
         </div>
       </section>
 
+      {/* Chef's Special Section (Now fully dynamic!) */}
       <section className="mx-auto max-w-7xl px-6 py-16 md:px-10">
         <div className="mb-8 flex items-end justify-between gap-4">
           <div>
@@ -96,49 +128,55 @@ function Index() {
           </div>
           <Link to="/menu" className="text-sm text-primary hover:underline">View all →</Link>
         </div>
-        <div className="flex snap-x snap-mandatory gap-5 overflow-x-auto pb-4 -mx-6 px-6 md:-mx-10 md:px-10">
-          {CHEFS_SPECIALS.map((item) => (
-            <motion.div
-              key={item.id}
-              whileHover={{ y: -4 }}
-              className="min-w-[280px] max-w-[300px] snap-start overflow-hidden rounded-3xl border border-border bg-card shadow-sm"
-            >
-              <div className="relative aspect-[4/3] w-full overflow-hidden bg-secondary">
-                <img
-                  src={imageForItem(item)}
-                  alt={item.name}
-                  loading="lazy"
-                  className="h-full w-full object-cover transition duration-500 hover:scale-105"
-                />
-                {item.badge && (
-                  <span className="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary shadow">
-                    {item.badge}
-                  </span>
-                )}
-              </div>
-              <div className="p-5">
-              {false && item.badge && (
-                <span className="inline-block rounded-full border border-primary/30 bg-primary/5 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
-                  {item.badge}
-                </span>
-              )}
-              <h3 className="font-serif text-xl leading-tight">{item.name}</h3>
-              {item.description && (
-                <p className="mt-2 text-sm text-muted-foreground">{item.description}</p>
-              )}
-              <div className="mt-4 flex items-center justify-between">
-                <div className="font-serif text-lg text-primary">₹{item.price}</div>
-                <button
-                  onClick={() => openOrder(item)}
-                  className="rounded-full border border-primary/40 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-primary hover:bg-primary hover:text-primary-foreground"
-                >
-                  Order Now
-                </button>
-              </div>
-              </div>
-            </motion.div>
-          ))}
-        </div>
+
+        {/* Loading Spinner ya cards display */}
+        {loading ? (
+          <div className="py-12 text-center text-muted-foreground">
+            <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <p className="mt-2 text-xs">Loading specials...</p>
+          </div>
+        ) : chefsSpecials.length === 0 ? (
+          <p className="text-muted-foreground text-sm">No specials available today.</p>
+        ) : (
+          <div className="flex snap-x snap-mandatory gap-5 overflow-x-auto pb-4 -mx-6 px-6 md:-mx-10 md:px-10">
+            {chefsSpecials.map((item) => (
+              <motion.div
+                key={item.id}
+                whileHover={{ y: -4 }}
+                className="min-w-[280px] max-w-[300px] snap-start overflow-hidden rounded-3xl border border-border bg-card shadow-sm"
+              >
+                <div className="relative aspect-[4/3] w-full overflow-hidden bg-secondary">
+                  <img
+                    src={imageForItem(item)}
+                    alt={item.name}
+                    loading="lazy"
+                    className="h-full w-full object-cover transition duration-500 hover:scale-105"
+                  />
+                  {item.badge && (
+                    <span className="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary shadow">
+                      {item.badge}
+                    </span>
+                  )}
+                </div>
+                <div className="p-5">
+                  <h3 className="font-serif text-xl leading-tight">{item.name}</h3>
+                  {item.description && (
+                    <p className="mt-2 text-sm text-muted-foreground">{item.description}</p>
+                  )}
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="font-serif text-lg text-primary">₹{item.price}</div>
+                    <button
+                      onClick={() => openOrder(item)}
+                      className="rounded-full border border-primary/40 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-primary hover:bg-primary hover:text-primary-foreground"
+                    >
+                      Order Now
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="mx-auto max-w-7xl px-6 py-16 md:px-10">
@@ -207,7 +245,6 @@ function Index() {
     </div>
   );
 }
-
 function Detail({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
     <div>

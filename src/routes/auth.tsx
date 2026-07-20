@@ -11,7 +11,6 @@ export const Route = createFileRoute("/auth")({
 
 function AuthPage() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -26,17 +25,11 @@ function AuthPage() {
     e.preventDefault();
     setBusy(true);
     try {
-      const fn = mode === "signin" ? supabase.auth.signInWithPassword : supabase.auth.signUp;
-      const { error } = await fn.call(supabase.auth, {
-        email,
-        password,
-        options: { emailRedirectTo: `${window.location.origin}/admin-dashboard` },
-      } as any);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      if (mode === "signup") toast.success("Account created. Ask admin to promote you.");
-      else navigate({ to: "/admin-dashboard" });
+      navigate({ to: "/admin-dashboard" });
     } catch (e: any) {
-      toast.error(e.message ?? "Auth failed");
+      toast.error(e.message ?? "Sign in failed");
     } finally {
       setBusy(false);
     }
@@ -45,7 +38,7 @@ function AuthPage() {
   return (
     <div>
       <section className="mx-auto flex min-h-[70vh] max-w-md flex-col justify-center px-6 py-16">
-        <h1 className="font-serif text-3xl">{mode === "signin" ? "Admin sign in" : "Create account"}</h1>
+        <h1 className="font-serif text-3xl">Admin sign in</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Manage menu, orders and reservations.
         </p>
@@ -72,15 +65,9 @@ function AuthPage() {
             disabled={busy}
             className="btn-burgundy w-full rounded-full px-6 py-3 text-sm font-medium disabled:opacity-40"
           >
-            {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+            {busy ? "Please wait…" : "Sign in"}
           </button>
         </form>
-        <button
-          onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
-          className="mt-4 text-sm text-muted-foreground hover:text-foreground"
-        >
-          {mode === "signin" ? "Create an admin account →" : "Have an account? Sign in →"}
-        </button>
       </section>
       <Footer />
     </div>
