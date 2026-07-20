@@ -10,7 +10,7 @@ export const CAFE = {
   address:
     "217, 2nd Floor, AR Mall, Panvel Point, Mota Varachha, Surat, Gujarat 394105",
   addressShort: "AR Mall, Mota Varachha, Surat",
-  hours: "Tuesday to Monday · 10:00 AM – 12:30 AM",
+  hours: "Everyday · 10:00 AM – 12:30 AM",
   costForTwo: "₹1400 for two",
   cuisines: ["Italian", "Desserts", "Mexican"],
   facilities: ["Dinner", "Indoor seating", "Lunch", "Home delivery"],
