@@ -6,7 +6,7 @@ export const CAFE = {
   phone: "+919638330214",
   phoneDisplay: "+91 96383 30214",
   whatsapp: "919638330214",
-  email: "kiaancafe@gmail.com",
+  email: "prinsipansuriya16@gmail.com",
   address:
     "217, 2nd Floor, AR Mall, Panvel Point, Mota Varachha, Surat, Gujarat 394105",
   addressShort: "AR Mall, Mota Varachha, Surat",

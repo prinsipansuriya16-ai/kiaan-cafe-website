@@ -31,13 +31,13 @@ const REVIEWS = [
 ];
 
 const HOURS = [
+  { d: "Sunday", t: "10:00 AM – 12:30 AM" },
+  { d: "Monday", t: "10:00 AM – 12:30 AM" },
   { d: "Tuesday", t: "10:00 AM – 12:30 AM" },
   { d: "Wednesday", t: "10:00 AM – 12:30 AM" },
   { d: "Thursday", t: "10:00 AM – 12:30 AM" },
   { d: "Friday", t: "10:00 AM – 12:30 AM" },
   { d: "Saturday", t: "10:00 AM – 12:30 AM" },
-  { d: "Sunday", t: "10:00 AM – 12:30 AM" },
-  { d: "Monday", t: "10:00 AM – 12:30 AM" },
 ];
 
 function Index() {
