@@ -8,7 +8,7 @@ A modern, high-converting web platform designed for local cafes and cloud kitche
 
 > *"You don't need to write every line of code manually to build impactful software. You need to understand business systems, user experience, and how to bridge technology with real-world problems."*
 
-Hi! I'm **Priyanshi Pansuriya** 👋 — a data science & tech enthusiast focused on creating practical software solutions for local businesses. 
+Hi! I'm **Priyanshi Pansuriya** 👋 — a data Analyst & tech enthusiast focused on creating practical software solutions for local businesses. 
 
 While I understand core programming logic, database architectures, and data flows, I leveraged **AI-driven development tools (Claude & Lovable)** as my technical execution partners to build this end-to-end full-stack application. My main role in this project was acting as the **Product Owner & Architect**:
 * 🎯 **Identifying Business Pain Points:** High delivery commissions, lack of direct customer relationship management, and manual table reservation chaos.
